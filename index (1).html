@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Выборы старосты 7г</title>
+<style>
+:root{
+  --bg:#eef2f7; --card:#ffffff; --ink:#14213d; --muted:#5b667a;
+  --line:#d5dce8; --accent:#2457d6; --accent-ink:#ffffff;
+  --ok:#1f8a4c; --bad:#c0392b; --bar:#c9d8f6;
+}
+*{box-sizing:border-box}
+html{color-scheme:light}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font:17px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif}
+main{max-width:560px;margin:0 auto;padding:20px 16px 48px}
+h1{font-size:26px;line-height:1.2;margin:8px 0 4px}
+.sub{color:var(--muted);margin:0 0 20px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:20px}
+label{display:block;font-weight:600;margin-bottom:8px}
+input[type=text]{width:100%;padding:14px;font-size:24px;letter-spacing:4px;text-align:center;
+  text-transform:uppercase;border:2px solid var(--line);border-radius:10px;font-family:Consolas,monospace}
+input[type=text]:focus{outline:3px solid #9db8f5;border-color:var(--accent)}
+button{font:inherit;font-weight:600;cursor:pointer;border:0;border-radius:10px;
+  padding:14px 18px;background:var(--accent);color:var(--accent-ink);width:100%;margin-top:14px}
+button:focus-visible{outline:3px solid #9db8f5;outline-offset:2px}
+button:disabled{opacity:.5;cursor:default}
+button.ghost{background:transparent;color:var(--accent);border:2px solid var(--accent)}
+.msg{margin-top:12px;color:var(--bad);font-weight:600;min-height:1.5em}
+.timer{margin-bottom:16px;padding:10px 14px;border-radius:10px;background:#e1e9fb;color:#173a94;font-weight:600}
+.who{margin:0 0 12px;font-weight:600}
+.cand{display:flex;align-items:center;gap:12px;padding:12px;border:2px solid var(--line);
+  border-radius:10px;margin-bottom:8px;cursor:pointer}
+.cand:has(input:checked){border-color:var(--accent);background:#eef3ff}
+.cand input{width:20px;height:20px;accent-color:var(--accent)}
+.list{max-height:52vh;overflow-y:auto;margin:0 -4px;padding:0 4px}
+.done{text-align:center}
+.done .big{font-size:44px;margin:0}
+.winner{background:var(--ink);color:#fff;border-radius:12px;padding:18px;text-align:center;margin-bottom:16px}
+.winner small{display:block;opacity:.75;margin-bottom:4px}
+.winner b{font-size:24px}
+.row{margin:10px 0}
+.row .top{display:flex;justify-content:space-between;gap:8px}
+.row .bar{height:12px;border-radius:6px;background:var(--bar);margin-top:4px}
+.row .bar i{display:block;height:100%;border-radius:6px;background:var(--accent)}
+.timer + .timer{margin-top:-6px}
+.hidden{display:none}
+</style>
+</head>
+<body>
+<main>
+  <h1>Выборы старосты 7г</h1>
+  <p class="sub" id="sub">Загрузка…</p>
+  <div id="app" class="card"></div>
+</main>
+
+<script>
+// ===== ВСТАВЬТЕ СВОИ ДАННЫЕ ИЗ SUPABASE (Project Settings → API) =====
+const SUPABASE_URL = "https://anteomaddvavkampqnul.supabase.co";
+const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFudGVvbWFkZHZhdmthbXBxbnVsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTUxODQ2MjksImV4cCI6MjExMDc2MDYyOX0.EbYG0h_J9WvXyIAtrRScPpvT98G8-tezUx4UoN4BcZ0";
+// =====================================================================
+
+const app = document.getElementById("app");
+const sub = document.getElementById("sub");
+let deadline = null, timerId = null, turnoutId = null;
+
+async function rpc(fn, args) {
+  const r = await fetch(SUPABASE_URL + "/rest/v1/rpc/" + fn, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "apikey": SUPABASE_KEY },
+    body: JSON.stringify(args || {})
+  });
+  if (!r.ok) throw new Error("network");
+  return r.json();
+}
+
+function el(tag, attrs, ...kids) {
+  const e = document.createElement(tag);
+  for (const k in (attrs || {})) {
+    if (k === "class") e.className = attrs[k];
+    else if (k.startsWith("on")) e.addEventListener(k.slice(2), attrs[k]);
+    else e.setAttribute(k, attrs[k]);
+  }
+  for (const c of kids) e.append(c);
+  return e;
+}
+function show(...nodes) { app.replaceChildren(...nodes); }
+
+function fmtLeft(ms) {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600),
+        m = Math.floor(s % 3600 / 60), sec = s % 60;
+  return (d ? d + " д " : "") + h + " ч " + m + " мин " + sec + " с";
+}
+
+function startTimer(node) {
+  clearInterval(timerId);
+  const tick = () => {
+    const left = deadline - Date.now();
+    if (left <= 0) { clearInterval(timerId); init(); return; }
+    node.textContent = "До конца голосования: " + fmtLeft(left);
+  };
+  tick();
+  timerId = setInterval(tick, 1000);
+}
+
+function problem(text) {
+  show(el("p", { class: "msg" }, text),
+       el("button", { onclick: init }, "Попробовать снова"));
+}
+
+// ---------- Шаг 1: ввод кода ----------
+function stepCode(deadlineISO, voted, total) {
+  deadline = new Date(deadlineISO).getTime();
+  sub.textContent = "Введите личный код, который вам выдали.";
+  const timer = el("div", { class: "timer" });
+  const turnout = el("div", { class: "timer" }, "Проголосовало: " + voted + " из " + total);
+  clearInterval(turnoutId);
+  turnoutId = setInterval(async () => {
+    try {
+      const r = await rpc("get_results");
+      if (r.status === "open") turnout.textContent = "Проголосовало: " + r.voted + " из " + r.total;
+    } catch (e) {}
+  }, 30000);
+  const input = el("input", { type: "text", id: "code", maxlength: "9",
+    autocomplete: "off", autocapitalize: "characters", spellcheck: "false",
+    placeholder: "XXXX-XXXX" });
+  const msg = el("div", { class: "msg", role: "alert" });
+  const btn = el("button", { id: "go" }, "Продолжить");
+
+  async function go() {
+    msg.textContent = "";
+    const code = input.value.trim();
+    if (code.replace("-", "").length < 8) { msg.textContent = "Введите код полностью (8 символов)."; return; }
+    btn.disabled = true;
+    try {
+      const r = await rpc("check_code", { p_code: code });
+      if (r.status === "ok") return stepPick(code, r);
+      if (r.status === "closed") return init();
+      msg.textContent = r.status === "used"
+        ? "Этим кодом уже проголосовали."
+        : "Такого кода нет. Проверьте, нет ли опечатки.";
+    } catch (e) { msg.textContent = "Нет связи с сервером. Попробуйте ещё раз."; }
+    btn.disabled = false;
+  }
+  btn.addEventListener("click", go);
+  input.addEventListener("keydown", e => { if (e.key === "Enter") go(); });
+  show(timer, turnout, el("label", { for: "code" }, "Ваш код"), input, btn, msg);
+  startTimer(timer);
+  input.focus();
+}
+
+// ---------- Шаг 2: выбор кандидата ----------
+async function stepPick(code, me) {
+  clearInterval(turnoutId);
+  sub.textContent = "Выберите, кого вы хотите видеть старостой.";
+  let cands;
+  try { cands = await rpc("get_candidates"); } catch (e) { return problem("Не удалось загрузить список."); }
+  cands = cands.filter(c => c.id !== me.id);
+
+  const msg = el("div", { class: "msg", role: "alert" });
+  const btn = el("button", {}, "Проголосовать");
+  const list = el("div", { class: "list" });
+  cands.forEach(c => {
+    list.append(el("label", { class: "cand" },
+      el("input", { type: "radio", name: "cand", value: String(c.id) }), c.name));
+  });
+
+  btn.addEventListener("click", async () => {
+    const chosen = list.querySelector("input:checked");
+    if (!chosen) { msg.textContent = "Сначала выберите ученика."; return; }
+    const name = chosen.parentElement.textContent;
+    if (!confirm("Вы голосуете за: " + name + ".\nИзменить голос потом будет нельзя. Продолжить?")) return;
+    btn.disabled = true; msg.textContent = "";
+    try {
+      const r = await rpc("cast_vote", { p_code: code, p_candidate: Number(chosen.value) });
+      if (r === "ok") return stepDone();
+      const texts = {
+        used: "Этим кодом уже проголосовали.",
+        self: "За себя голосовать нельзя.",
+        closed: "Голосование уже закончилось.",
+        bad_code: "Код не подошёл.", bad_candidate: "Такого кандидата нет."
+      };
+      msg.textContent = texts[r] || "Не получилось. Попробуйте ещё раз.";
+    } catch (e) { msg.textContent = "Нет связи с сервером. Нажмите ещё раз, чтобы проверить, дошёл ли голос."; }
+    btn.disabled = false;
+  });
+
+  show(el("p", { class: "who" }, "Вы вошли как: " + me.name), list, btn, msg);
+}
+
+// ---------- Готово ----------
+function stepDone() {
+  clearInterval(turnoutId);
+  sub.textContent = "";
+  show(el("div", { class: "done" },
+    el("p", { class: "big" }, "✓"),
+    el("h2", {}, "Голос принят"),
+    el("p", { class: "sub" }, "Спасибо! Итоги появятся здесь после окончания голосования.")));
+}
+
+// ---------- Итоги ----------
+function stepResults(r) {
+  clearInterval(timerId); clearInterval(turnoutId);
+  sub.textContent = "Голосование закончилось.";
+  if (!r.results.length) { show(el("p", {}, "Голосов не было.")); return; }
+  const top = r.results[0].votes;
+  const winners = r.results.filter(x => x.votes === top);
+  const box = el("div", { class: "winner" },
+    el("small", {}, winners.length > 1 ? "Ничья между:" : (winners[0].id === 0 ? "Решение класса" : "Новый староста")),
+    el("b", {}, winners.map(w => w.name).join(", ")));
+  const rows = r.results.map(x => el("div", { class: "row" },
+    el("div", { class: "top" }, el("span", {}, x.name), el("b", {}, String(x.votes))),
+    el("div", { class: "bar" }, el("i", { style: "width:" + Math.round(x.votes / top * 100) + "%" }))));
+  show(box, ...rows,
+    el("p", { class: "sub" }, "Проголосовало: " + r.voted + " из " + r.all + " чел."));
+}
+
+async function init() {
+  show(el("p", {}, "Загрузка…"));
+  try {
+    const r = await rpc("get_results");
+    if (r.status === "open") stepCode(r.deadline, r.voted, r.total);
+    else stepResults(r);
+  } catch (e) { problem("Нет связи с сервером."); }
+}
+init();
+</script>
+</body>
+</html>
